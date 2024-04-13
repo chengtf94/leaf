@@ -14,6 +14,9 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 
+/***
+ * ID生成器：基于号段模式
+ */
 public class SegmentIDGenImpl implements IDGen {
     private static final Logger logger = LoggerFactory.getLogger(SegmentIDGenImpl.class);
 
@@ -37,24 +40,25 @@ public class SegmentIDGenImpl implements IDGen {
      * 一个Segment维持时间为15分钟
      */
     private static final long SEGMENT_DURATION = 15 * 60 * 1000L;
-    private ExecutorService service = new ThreadPoolExecutor(5, Integer.MAX_VALUE, 60L, TimeUnit.SECONDS, new SynchronousQueue<Runnable>(), new UpdateThreadFactory());
+
+    /** 线程池 */
+    private ExecutorService service = new ThreadPoolExecutor(
+            5,
+            Integer.MAX_VALUE,
+            60L,
+            TimeUnit.SECONDS,
+            new SynchronousQueue<Runnable>(),
+            new UpdateThreadFactory()
+    );
+
+    /** 是否初始化完成 */
     private volatile boolean initOK = false;
+
+    /** 本次缓存：key为biz_tag业务标识，value为该业务侠双号段Buffer */
     private Map<String, SegmentBuffer> cache = new ConcurrentHashMap<String, SegmentBuffer>();
+
+    /** DAO */
     private IDAllocDao dao;
-
-    public static class UpdateThreadFactory implements ThreadFactory {
-
-        private static int threadInitNumber = 0;
-
-        private static synchronized int nextThreadNum() {
-            return threadInitNumber++;
-        }
-
-        @Override
-        public Thread newThread(Runnable r) {
-            return new Thread(r, "Thread-Segment-Update-" + nextThreadNum());
-        }
-    }
 
     @Override
     public boolean init() {
@@ -79,11 +83,13 @@ public class SegmentIDGenImpl implements IDGen {
         service.scheduleWithFixedDelay(new Runnable() {
             @Override
             public void run() {
+                // 基于DB更新本地缓存cache：1分钟调度一次
                 updateCacheFromDb();
             }
         }, 60, 60, TimeUnit.SECONDS);
     }
 
+    /** 基于DB更新本地缓存cache */
     private void updateCacheFromDb() {
         logger.info("update cache from db");
         StopWatch sw = new Slf4JStopWatch();
@@ -92,13 +98,12 @@ public class SegmentIDGenImpl implements IDGen {
             if (dbTags == null || dbTags.isEmpty()) {
                 return;
             }
-            List<String> cacheTags = new ArrayList<String>(cache.keySet());
+            List<String> cacheTags = new ArrayList<>(cache.keySet());
             Set<String> insertTagsSet = new HashSet<>(dbTags);
             Set<String> removeTagsSet = new HashSet<>(cacheTags);
-            //db中新加的tags灌进cache
-            for(int i = 0; i < cacheTags.size(); i++){
-                String tmp = cacheTags.get(i);
-                if(insertTagsSet.contains(tmp)){
+            // db中新加的tags灌进cache
+            for (String tmp : cacheTags) {
+                if (insertTagsSet.contains(tmp)) {
                     insertTagsSet.remove(tmp);
                 }
             }
@@ -112,10 +117,9 @@ public class SegmentIDGenImpl implements IDGen {
                 cache.put(tag, buffer);
                 logger.info("Add tag {} from db to IdCache, SegmentBuffer {}", tag, buffer);
             }
-            //cache中已失效的tags从cache删除
-            for(int i = 0; i < dbTags.size(); i++){
-                String tmp = dbTags.get(i);
-                if(removeTagsSet.contains(tmp)){
+            // cache中已失效的tags从cache删除
+            for (String tmp : dbTags) {
+                if (removeTagsSet.contains(tmp)) {
                     removeTagsSet.remove(tmp);
                 }
             }
@@ -141,6 +145,7 @@ public class SegmentIDGenImpl implements IDGen {
                 synchronized (buffer) {
                     if (!buffer.isInitOk()) {
                         try {
+                            // 基于DB更新双号段缓存
                             updateSegmentFromDb(key, buffer.getCurrent());
                             logger.info("Init buffer. Update leafkey {} {} from db", key, buffer.getCurrent());
                             buffer.setInitOk(true);
@@ -155,6 +160,7 @@ public class SegmentIDGenImpl implements IDGen {
         return new Result(EXCEPTION_ID_KEY_NOT_EXISTS, Status.EXCEPTION);
     }
 
+    /** 基于DB更新双号段缓存 */
     public void updateSegmentFromDb(String key, Segment segment) {
         StopWatch sw = new Slf4JStopWatch();
         SegmentBuffer buffer = segment.getBuffer();
@@ -169,6 +175,7 @@ public class SegmentIDGenImpl implements IDGen {
             buffer.setStep(leafAlloc.getStep());
             buffer.setMinStep(leafAlloc.getStep());//leafAlloc中的step为DB中的step
         } else {
+            /* 动态调整step */
             long duration = System.currentTimeMillis() - buffer.getUpdateTimestamp();
             int nextStep = buffer.getStep();
             if (duration < SEGMENT_DURATION) {
@@ -199,6 +206,7 @@ public class SegmentIDGenImpl implements IDGen {
         sw.stop("updateSegmentFromDb", key + " " + segment);
     }
 
+    /** 从双号段缓存中虎丘ID */
     public Result getIdFromSegmentBuffer(final SegmentBuffer buffer) {
         while (true) {
             buffer.rLock().lock();
@@ -206,6 +214,7 @@ public class SegmentIDGenImpl implements IDGen {
                 final Segment segment = buffer.getCurrent();
                 if (!buffer.isNextReady() && (segment.getIdle() < 0.9 * segment.getStep()) && buffer.getThreadRunning().compareAndSet(false, true)) {
                     service.execute(new Runnable() {
+                        /** 当号段消费到某个点时就异步的把下⼀个号段加载到内存中。⽽不需要等到号段⽤尽的时候才去更新号段 */
                         @Override
                         public void run() {
                             Segment next = buffer.getSegments()[buffer.nextPos()];
@@ -270,6 +279,17 @@ public class SegmentIDGenImpl implements IDGen {
                     break;
                 }
             }
+        }
+    }
+
+    public static class UpdateThreadFactory implements ThreadFactory {
+        private static int threadInitNumber = 0;
+        private static synchronized int nextThreadNum() {
+            return threadInitNumber++;
+        }
+        @Override
+        public Thread newThread(Runnable r) {
+            return new Thread(r, "Thread-Segment-Update-" + nextThreadNum());
         }
     }
 

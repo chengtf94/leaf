@@ -2,7 +2,12 @@ package com.sankuai.inf.leaf.segment.model;
 
 import java.util.concurrent.atomic.AtomicLong;
 
+/**
+ * 号段
+ */
 public class Segment {
+
+    /** 当前值、最大值、步长、归属的号段Buffer */
     private AtomicLong value = new AtomicLong(0);
     private volatile long max;
     private volatile int step;

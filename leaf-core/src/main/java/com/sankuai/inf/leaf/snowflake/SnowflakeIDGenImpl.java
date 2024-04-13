@@ -10,18 +10,20 @@ import org.slf4j.LoggerFactory;
 
 import java.util.Random;
 
+/**
+ * ID生成器：基于雪花算法
+ */
 public class SnowflakeIDGenImpl implements IDGen {
+    private static final Logger LOGGER = LoggerFactory.getLogger(SnowflakeIDGenImpl.class);
 
     @Override
     public boolean init() {
         return true;
     }
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(SnowflakeIDGenImpl.class);
-
     private final long twepoch;
     private final long workerIdBits = 10L;
-    private final long maxWorkerId = ~(-1L << workerIdBits);//最大能够分配的workerid =1023
+    private final long maxWorkerId = ~(-1L << workerIdBits); // 最大能够分配的workerid = 1023
     private final long sequenceBits = 12L;
     private final long workerIdShift = sequenceBits;
     private final long timestampLeftShift = sequenceBits + workerIdBits;
@@ -63,10 +65,13 @@ public class SnowflakeIDGenImpl implements IDGen {
         if (timestamp < lastTimestamp) {
             long offset = lastTimestamp - timestamp;
             if (offset <= 5) {
+                // 时间偏差⼤⼩⼩于5ms，则等待两倍时间，也就是10ms
                 try {
                     wait(offset << 1);
                     timestamp = timeGen();
                     if (timestamp < lastTimestamp) {
+                        // 还是⼩于，抛异常并上报
+                        // throwClockBackwardsEx(timestamp);
                         return new Result(-1, Status.EXCEPTION);
                     }
                 } catch (InterruptedException e) {
@@ -74,6 +79,8 @@ public class SnowflakeIDGenImpl implements IDGen {
                     return new Result(-2, Status.EXCEPTION);
                 }
             } else {
+                // 时间偏差较⼤，直接抛出异常
+                // throwClockBackwardsEx(timestamp);
                 return new Result(-3, Status.EXCEPTION);
             }
         }
